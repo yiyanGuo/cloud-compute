@@ -1,0 +1,101 @@
+services:
+  opengauss:
+    image: opengauss/opengauss-server:latest
+    container_name: ecommerce-opengauss
+    privileged: true
+    environment:
+      GS_PASSWORD: ${OPENGAUSS_PASSWORD:-OpenGauss@123}
+      GS_DB: ${OPENGAUSS_DATABASE:-postgres}
+      GS_USERNAME: ${OPENGAUSS_USER:-gaussdb}
+      GS_USER_PASSWORD: ${OPENGAUSS_PASSWORD:-OpenGauss@123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - opengauss_data:/var/lib/opengauss
+    healthcheck:
+      test: ["CMD-SHELL", "su - omm -c \"gsql -d postgres -p 5432 -c 'select 1'\" >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  spark-master:
+    image: spark:3.5.6-scala2.12-java17-python3-ubuntu
+    container_name: ecommerce-spark-master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    ports:
+      - "7077:7077"
+      - "8082:8080"
+    restart: unless-stopped
+
+  spark-worker:
+    image: spark:3.5.6-scala2.12-java17-python3-ubuntu
+    container_name: ecommerce-spark-worker
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --webui-port
+      - "8081"
+    environment:
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2G
+    depends_on:
+      - spark-master
+    ports:
+      - "8083:8081"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ecommerce-backend
+    command:
+      - /bin/sh
+      - -c
+      - |
+        until getent hosts "$${OPENGAUSS_HOST:-opengauss}" >/dev/null 2>&1; do sleep 1; done
+        until python -c "import os, socket; socket.create_connection((os.getenv('OPENGAUSS_HOST', 'opengauss'), int(os.getenv('OPENGAUSS_PORT', '5432'))), 2).close()" >/dev/null 2>&1; do sleep 1; done
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      OPENGAUSS_HOST: ${OPENGAUSS_HOST:-opengauss}
+      OPENGAUSS_PORT: ${OPENGAUSS_PORT:-5432}
+      OPENGAUSS_DATABASE: ${OPENGAUSS_DATABASE:-postgres}
+      OPENGAUSS_USER: ${OPENGAUSS_USER:-gaussdb}
+      OPENGAUSS_PASSWORD: ${OPENGAUSS_PASSWORD:-OpenGauss@123}
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:7077}
+      SPARK_SUBMIT_BIN: ${SPARK_SUBMIT_BIN:-/usr/local/bin/spark-submit}
+      SPARK_JDBC_DRIVER_JAR: ${SPARK_JDBC_DRIVER_JAR:-/opt/jdbc/opengauss-jdbc.jar}
+      SPARK_SUBMIT_TIMEOUT_SECONDS: ${SPARK_SUBMIT_TIMEOUT_SECONDS:-240}
+    depends_on:
+      opengauss:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: ecommerce-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  opengauss_data:
