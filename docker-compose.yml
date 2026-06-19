@@ -56,6 +56,7 @@ services:
     restart: unless-stopped
 
   backend:
+    image: cloud-compute-backend:latest
     build:
       context: ./backend
     container_name: ecommerce-backend
@@ -86,6 +87,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: cloud-compute-frontend:latest
     build:
       context: ./frontend
       args:

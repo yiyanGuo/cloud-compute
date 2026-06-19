@@ -10,3 +10,4 @@ build/
 coverage/
 *.log
 opengauss_data/
+cloud-compute.tar

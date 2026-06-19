@@ -1,68 +1,191 @@
 # 电商销售与库存智能分析平台
 
-这是一个面向“大数据与云计算”课程设计的前后端分离项目，使用 Spark + openGauss，并通过 Docker Compose 部署伪分布式服务。
+本项目是一个面向“大数据与云计算”课程设计的前后端分离系统，使用 Docker Compose 编排前端、后端、openGauss 和 Spark 伪分布式运行环境。
 
-## 技术栈
+## 服务组成
 
-- 前端：Vue 3、Vite、ECharts、Nginx
-- 后端：FastAPI、SQLAlchemy、psycopg、PySpark
-- 数据库：openGauss 官方镜像 `opengauss/opengauss-server:7.0.0-RC3.B016`
-- 大数据处理：Docker Official Image `spark:3.5.6-scala2.12-java17-python3-ubuntu`
-- 容器化：Docker Compose
+`docker-compose.yml` 启动 5 个服务：
 
-## 启动
+| 服务 | 容器名 | 镜像/构建方式 | 端口 |
+| --- | --- | --- | --- |
+| `opengauss` | `ecommerce-opengauss` | `opengauss/opengauss-server:latest` | `5432:5432` |
+| `spark-master` | `ecommerce-spark-master` | `spark:3.5.6-scala2.12-java17-python3-ubuntu` | `7077:7077`、`8082:8080` |
+| `spark-worker` | `ecommerce-spark-worker` | `spark:3.5.6-scala2.12-java17-python3-ubuntu` | `8083:8081` |
+| `backend` | `ecommerce-backend` | 从 `./backend` 构建，镜像名 `cloud-compute-backend` | `${BACKEND_PORT:-8000}:8000` |
+| `frontend` | `ecommerce-frontend` | 从 `./frontend` 构建，镜像名 `cloud-compute-frontend` | `${FRONTEND_PORT:-8080}:80` |
+
+openGauss 数据保存在 Docker volume `opengauss_data` 中。后端会等待 openGauss 健康检查通过后再启动，并通过 `spark://spark-master:7077` 提交 Spark 分析任务。
+
+`backend` 和 `frontend` 服务同时配置了 `image` 与 `build`：
+
+- 执行 `docker compose build` 时，会从源码目录构建镜像，并写入固定镜像名 `cloud-compute-backend:latest` 和 `cloud-compute-frontend:latest`。
+- 只执行 `docker compose up -d` 时，Compose 会直接使用本地已有的上述镜像；如果镜像来自 `cloud-compute.tar`，则不需要保留前后端源码目录。
+
+## 环境要求
+
+- Docker
+- Docker Compose v2
+- 能访问 Docker Hub 或已准备好 `cloud-compute.tar`
+
+首次部署前复制环境变量文件：
 
 ```bash
-cp .env.example .env
-docker compose pull
-docker compose up --build
+test -f .env || cp .env.example .env
 ```
 
-如果本地访问 Docker Hub 不稳定导致 `docker compose pull` 超时，直接重试该命令即可；Compose 中的第三方服务仍然使用固定官方镜像名，不需要改成本地已有镜像。
+常用变量：
 
-访问地址：
+```env
+OPENGAUSS_DATABASE=postgres
+OPENGAUSS_USER=appuser
+OPENGAUSS_PASSWORD=AppUser@123
+BACKEND_PORT=8000
+FRONTEND_PORT=8080
+```
 
-- 前端：http://localhost:8080
-- 后端 API：http://localhost:8000/docs
-- Spark Master UI：http://localhost:8082
-- Spark Worker UI：http://localhost:8083
+如需修改数据库密码、数据库名、后端端口或前端端口，修改 `.env` 后重新启动 Compose。
 
-首次打开前端后，在“分析任务”页面点击“初始化模拟数据”，再点击“运行 Spark 分析”。
+## 部署方式一：源码构建并启动
 
-## 官方镜像约束
+适用于保留完整源码目录，或希望从当前源码重新构建前后端镜像的场景。
 
-本项目不依赖本地已有镜像：
-
-- openGauss 和 Spark 直接从官方公开镜像源拉取。
-- 后端镜像基于官方 `python:3.12-slim-bookworm` 构建。
-- 前端构建阶段基于官方 `node:22-alpine`，运行阶段基于官方 `nginx:1.27-alpine`。
-- Compose 不使用 `latest`，便于本地 ARM 与华为云 x86 环境复现。
-
-## 业务功能
-
-- 商品管理：新增、编辑、删除、搜索、库存调整。
-- 订单管理：订单列表、订单明细、状态筛选。
-- 运营看板：销售额、订单数、库存预警、销售趋势、热销商品、分类占比。
-- 分析任务：初始化模拟数据、触发 Spark 批处理、查看分析运行记录。
-
-## 上云迁移
-
-在华为云 x86 服务器上安装 Docker 与 Docker Compose 后，拉取源码并执行：
+需要的文件和目录：
 
 ```bash
-cp .env.example .env
-docker compose pull
+docker-compose.yml
+.env
+backend/
+frontend/
+```
+
+```bash
+test -f .env || cp .env.example .env
+docker compose build
+docker compose up -d
+```
+
+也可以合并为一条命令：
+
+```bash
 docker compose up --build -d
 ```
 
-如需修改端口、数据库密码或 Spark 参数，只改 `.env`，不要改镜像名。
+源码构建完成后，会得到并使用以下业务镜像：
+
+```bash
+cloud-compute-backend:latest
+cloud-compute-frontend:latest
+```
+
+如果本地没有 openGauss 或 Spark 镜像，`docker compose up -d` 会按 `docker-compose.yml` 自动拉取：
+
+```bash
+opengauss/opengauss-server:latest
+spark:3.5.6-scala2.12-java17-python3-ubuntu
+```
+
+如需显式拉取第三方镜像，可先执行：
+
+```bash
+docker compose pull opengauss spark-master spark-worker
+```
+
+## 部署方式二：使用 cloud-compute.tar 导入镜像并启动
+
+适用于离线环境、服务器网络不稳定的场景。
+
+这种方式不需要保留前端、后端源码目录。
+
+需要的文件：
+
+```bash
+docker-compose.yml
+.env
+cloud-compute.tar
+```
+
+将 `cloud-compute.tar` 放到与 `docker-compose.yml` 相同的目录后执行：
+
+```bash
+test -f .env || cp .env.example .env
+docker load -i cloud-compute.tar
+docker compose up -d
+```
+
+不要在这种方式下执行 `docker compose build` 或 `docker compose up --build`，否则 Compose 会尝试读取 `./backend` 和 `./frontend` 源码目录重新构建镜像。
+
+`cloud-compute.tar` 应至少包含以下镜像：
+
+```bash
+cloud-compute-backend
+cloud-compute-frontend
+opengauss/opengauss-server:latest
+spark:3.5.6-scala2.12-java17-python3-ubuntu
+```
+
+可用下面的命令检查当前 Compose 需要的镜像名：
+
+```bash
+docker compose config --images
+```
+
+## 访问地址
+
+服务启动后访问：
+
+- 前端：http://localhost:8080
+- 后端 API 文档：http://localhost:8000/docs
+- Spark Master UI：http://localhost:8082
+- Spark Worker UI：http://localhost:8083
+
+如果在 `.env` 中修改了 `FRONTEND_PORT` 或 `BACKEND_PORT`，以实际配置的端口为准。
+
+首次打开前端后，在“分析任务”页面点击“初始化模拟数据”，再点击“运行 Spark 分析”。
+
+## 常用运维命令
+
+查看服务状态：
+
+```bash
+docker compose ps
+```
+
+查看日志：
+
+```bash
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose logs -f opengauss
+```
+
+重启服务：
+
+```bash
+docker compose restart
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+停止服务并删除 openGauss 数据卷：
+
+```bash
+docker compose down -v
+```
 
 ## 验证命令
 
 ```bash
 docker compose config
 docker compose config --images
+docker compose ps
+```
+
+前端和后端镜像也可以单独构建验证：
+
+```bash
 docker compose build backend frontend
-npm --prefix frontend run build
-npm --prefix frontend audit --omit=dev
 ```
